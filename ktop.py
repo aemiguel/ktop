@@ -351,6 +351,20 @@ class KTop:
 
         psutil.cpu_percent(interval=None)
 
+        # Seed per-process CPU baselines so first scan has real deltas
+        for pid_str in os.listdir("/proc"):
+            if not pid_str.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid_str}/stat") as f:
+                    stat = f.read()
+                i1 = stat.rindex(")")
+                fields = stat[i1 + 2:].split()
+                self._proc_cpu_prev[int(pid_str)] = int(fields[11]) + int(fields[12])
+            except (FileNotFoundError, PermissionError, IndexError, ValueError, OSError):
+                continue
+        self._last_proc_scan = time.monotonic()
+
     # ── data collectors ──────────────────────────────────────────────────
     def _sample_cpu(self) -> float:
         pct = psutil.cpu_percent(interval=None)
@@ -447,7 +461,10 @@ class KTop:
     def _scan_procs(self) -> None:
         """Scan process list from /proc directly, cached for 5 seconds."""
         now = time.monotonic()
-        if now - self._last_proc_scan < 5.0 and self._procs_by_mem:
+        elapsed = now - self._last_proc_scan
+        # First scan needs 1s for stable CPU deltas, subsequent scans every 3s
+        min_wait = 1.0 if not self._procs_by_mem else 3.0
+        if elapsed < min_wait:
             return
         dt = now - self._last_proc_scan if self._last_proc_scan > 0 else 1.0
         self._last_proc_scan = now
@@ -463,7 +480,6 @@ class KTop:
             try:
                 with open(f"/proc/{pid}/stat") as f:
                     stat = f.read()
-                # Name is between first ( and last ) to handle parens in names
                 i0 = stat.index("(") + 1
                 i1 = stat.rindex(")")
                 name = stat[i0:i1]
@@ -471,10 +487,7 @@ class KTop:
                 utime = int(fields[11])   # field 14
                 stime = int(fields[12])   # field 15
                 rss_pages = int(fields[21])  # field 24
-                with open(f"/proc/{pid}/statm") as f:
-                    shared_pages = int(f.read().split()[2])
                 rss = rss_pages * ps
-                shared = shared_pages * ps
                 mem_pct = rss / total_mem * 100 if total_mem else 0
                 cpu_total = utime + stime
                 prev = self._proc_cpu_prev.get(pid, cpu_total)
@@ -484,7 +497,7 @@ class KTop:
                 procs.append({
                     "pid": pid, "name": name[:28],
                     "cpu_percent": cpu_pct, "memory_percent": mem_pct,
-                    "memory_info": SimpleNamespace(rss=rss, shared=shared),
+                    "rss": rss,
                 })
             except (FileNotFoundError, PermissionError, IndexError, ValueError, ProcessLookupError, OSError):
                 continue
@@ -493,6 +506,17 @@ class KTop:
         self._proc_cpu_prev = {k: v for k, v in self._proc_cpu_prev.items() if k in current}
         self._procs_by_mem = sorted(procs, key=lambda x: x.get("memory_percent", 0) or 0, reverse=True)[:10]
         self._procs_by_cpu = sorted(procs, key=lambda x: x.get("cpu_percent", 0) or 0, reverse=True)[:10]
+        # Deferred: only read statm for the top procs we actually display
+        displayed = {p["pid"] for p in self._procs_by_mem} | {p["pid"] for p in self._procs_by_cpu}
+        for p in procs:
+            if p["pid"] not in displayed:
+                continue
+            try:
+                with open(f"/proc/{p['pid']}/statm") as f:
+                    shared = int(f.read().split()[2]) * ps
+            except (FileNotFoundError, PermissionError, IndexError, ValueError, OSError):
+                shared = 0
+            p["memory_info"] = SimpleNamespace(rss=p["rss"], shared=shared)
 
     def _top_procs(self, key: str) -> list[dict]:
         if key == "memory_percent":
@@ -585,13 +609,21 @@ class KTop:
         t = self.theme
         pct = self._sample_cpu()
         c = _color_for(pct, t)
-        # Refresh frequency every 5s, core count is cached from init
+        # Refresh frequency every 5s via sysfs (0.02ms vs 9ms for psutil.cpu_freq)
         now = time.monotonic()
         if now - self._last_freq_check >= 5.0:
             self._last_freq_check = now
-            freq = psutil.cpu_freq()
-            if freq:
-                self._cpu_freq_str = f"{freq.current:.0f} MHz"
+            try:
+                with open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "rb") as f:
+                    self._cpu_freq_str = f"{int(f.read()) / 1000:.0f} MHz"
+            except (FileNotFoundError, ValueError, OSError):
+                # Fallback to psutil on systems without sysfs cpufreq
+                try:
+                    freq = psutil.cpu_freq()
+                    if freq:
+                        self._cpu_freq_str = f"{freq.current:.0f} MHz"
+                except Exception:
+                    pass
 
         # Panel inner width: third of terminal minus border(2) + padding(2) + safety(2)
         panel_w = max(20, self.console.width // 3 - 6)
