@@ -19,21 +19,15 @@ A terminal-based system resource monitor built for tracking resource usage when 
 
 ![ktop screenshot](screenshot.png?v=2)
 
-## Quick Install
+## Install
 
 ```bash
-git clone https://github.com/aemiguel/ktop.git
-cd ktop
-./setup.sh
+git clone https://github.com/aemiguel/ktop.git && cd ktop && ./setup.sh && ktop
 ```
 
-This creates a virtual environment, installs dependencies, and adds `ktop` to `~/.local/bin` so you can run it from anywhere.
+That's it — clones the repo, installs dependencies into a venv, adds `ktop` to `~/.local/bin`, and launches it.
 
-For a system-wide install (requires sudo):
-
-```bash
-./setup.sh --system
-```
+For a system-wide install (requires sudo): `./setup.sh --system`
 
 ## Usage
 
