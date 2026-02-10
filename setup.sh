@@ -81,5 +81,10 @@ if [ "$NEED_SUDO" = false ]; then
     esac
 fi
 
-echo "==> Done! Run 'ktop' from anywhere."
-echo "    Options: ktop -r 2  (2-second refresh)"
+echo "==> Done!"
+if command -v ktop &>/dev/null; then
+    echo "    Run 'ktop' from anywhere."
+else
+    echo "    Run: $INSTALL_PATH"
+    echo "    To use 'ktop' everywhere, open a new terminal or run: source ~/.bashrc"
+fi
