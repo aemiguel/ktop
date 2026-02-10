@@ -356,10 +356,11 @@ class KTop:
             if not pid_str.isdigit():
                 continue
             try:
-                with open(f"/proc/{pid_str}/stat") as f:
-                    stat = f.read()
-                i1 = stat.rindex(")")
-                fields = stat[i1 + 2:].split()
+                fd = os.open(f"/proc/{pid_str}/stat", os.O_RDONLY)
+                stat = os.read(fd, 512)
+                os.close(fd)
+                i1 = stat.rindex(b")")
+                fields = stat[i1 + 2:].split(None, 13)
                 self._proc_cpu_prev[int(pid_str)] = int(fields[11]) + int(fields[12])
             except (FileNotFoundError, PermissionError, IndexError, ValueError, OSError):
                 continue
@@ -470,6 +471,9 @@ class KTop:
         self._last_proc_scan = now
         total_mem = psutil.virtual_memory().total
         ps = self._page_size
+        cpu_prev = self._proc_cpu_prev
+        ct = self._clock_ticks
+        nc = self._num_cpus
         procs = []
         for pid_str in os.listdir("/proc"):
             if not pid_str.isdigit():
@@ -478,22 +482,21 @@ class KTop:
             if pid == 0:
                 continue
             try:
-                with open(f"/proc/{pid}/stat") as f:
-                    stat = f.read()
-                i0 = stat.index("(") + 1
-                i1 = stat.rindex(")")
-                name = stat[i0:i1]
-                fields = stat[i1 + 2:].split()
+                fd = os.open(f"/proc/{pid}/stat", os.O_RDONLY)
+                stat = os.read(fd, 512)
+                os.close(fd)
+                i1 = stat.rindex(b")")
+                fields = stat[i1 + 2:].split(None, 22)
                 utime = int(fields[11])   # field 14
                 stime = int(fields[12])   # field 15
-                rss_pages = int(fields[21])  # field 24
-                rss = rss_pages * ps
+                rss = int(fields[21]) * ps  # field 24
+                name = stat[stat.index(b"(") + 1:i1].decode("utf-8", errors="replace")
                 mem_pct = rss / total_mem * 100 if total_mem else 0
                 cpu_total = utime + stime
-                prev = self._proc_cpu_prev.get(pid, cpu_total)
+                prev = cpu_prev.get(pid, cpu_total)
                 cpu_delta = cpu_total - prev
-                self._proc_cpu_prev[pid] = cpu_total
-                cpu_pct = (cpu_delta / self._clock_ticks) / dt / self._num_cpus * 100 if dt > 0 else 0
+                cpu_prev[pid] = cpu_total
+                cpu_pct = (cpu_delta / ct) / dt * 100 if dt > 0 else 0
                 procs.append({
                     "pid": pid, "name": name[:28],
                     "cpu_percent": cpu_pct, "memory_percent": mem_pct,
@@ -503,7 +506,7 @@ class KTop:
                 continue
         # Clean stale PIDs
         current = {p["pid"] for p in procs}
-        self._proc_cpu_prev = {k: v for k, v in self._proc_cpu_prev.items() if k in current}
+        self._proc_cpu_prev = {k: v for k, v in cpu_prev.items() if k in current}
         self._procs_by_mem = sorted(procs, key=lambda x: x.get("memory_percent", 0) or 0, reverse=True)[:10]
         self._procs_by_cpu = sorted(procs, key=lambda x: x.get("cpu_percent", 0) or 0, reverse=True)[:10]
         # Deferred: only read statm for the top procs we actually display
@@ -512,8 +515,9 @@ class KTop:
             if p["pid"] not in displayed:
                 continue
             try:
-                with open(f"/proc/{p['pid']}/statm") as f:
-                    shared = int(f.read().split()[2]) * ps
+                fd = os.open(f"/proc/{p['pid']}/statm", os.O_RDONLY)
+                shared = int(os.read(fd, 128).split()[2]) * ps
+                os.close(fd)
             except (FileNotFoundError, PermissionError, IndexError, ValueError, OSError):
                 shared = 0
             p["memory_info"] = SimpleNamespace(rss=p["rss"], shared=shared)
@@ -721,8 +725,9 @@ class KTop:
             table.add_column("Shared", justify="right", width=10)
             table.add_column("Mem %", justify="right", width=7)
         else:
-            table.add_column("CPU %", justify="right", width=8)
-            table.add_column("Mem %", justify="right", width=8)
+            table.add_column("Core %", justify="right", width=8)
+            table.add_column("CPU %", justify="right", width=7)
+            table.add_column("Mem %", justify="right", width=7)
 
         for p in procs:
             pid = str(p.get("pid", ""))
@@ -740,7 +745,8 @@ class KTop:
                     shared = "N/A"
                 table.add_row(pid, name, used, shared, f"{mem_pct:.1f}%")
             else:
-                table.add_row(pid, name, f"{cpu_pct:.1f}%", f"{mem_pct:.1f}%")
+                sys_pct = cpu_pct / self._num_cpus
+                table.add_row(pid, name, f"{cpu_pct:.1f}%", f"{sys_pct:.1f}%", f"{mem_pct:.1f}%")
 
         return Panel(table, title=f"[bold {colour}] {title} [/bold {colour}]", border_style=colour)
 
