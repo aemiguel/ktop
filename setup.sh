@@ -8,6 +8,15 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$REPO_DIR/.venv"
 
+# Checkout latest tagged release (skip if not a git repo or no tags)
+if git -C "$REPO_DIR" rev-parse --git-dir &>/dev/null; then
+    LATEST_TAG=$(git -C "$REPO_DIR" describe --tags --abbrev=0 2>/dev/null || true)
+    if [ -n "$LATEST_TAG" ]; then
+        echo "==> Checking out release $LATEST_TAG"
+        git -C "$REPO_DIR" checkout --quiet "$LATEST_TAG"
+    fi
+fi
+
 # Determine install location
 if [ "${1:-}" = "--system" ]; then
     INSTALL_DIR="/usr/local/bin"
